@@ -4096,3 +4096,10 @@ def FunctionReturnThunks : InheritableAttr,
   let Subjects = SubjectList<[Function]>;
   let Documentation = [FunctionReturnThunksDocs];
 }
+
+def MojangCerealizeType : TypeAttr {
+  let Spellings = [CXX11<"mojang", "cerealize">, C2x<"clang", "cerealize">];
+  let Subjects = SubjectList<[Enum, CXXRecord, Field, Var, ClassTemplate, VarTemplate, ClassTemplateSpecialization]>;
+  let ASTNode = 1;
+  let Documentation = [Undocumented];
+}
