@@ -1,0 +1,1 @@
+../../../build/RelWithDebInfo/bin/clang -Xclang -ast-dump -fsyntax-only main.cpp

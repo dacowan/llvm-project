@@ -1,0 +1,20 @@
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+add_clang_tool(mojang-checker
+  Mojang-Checker.cpp
+  )
+clang_target_link_libraries(mojang-checker
+  PRIVATE
+  clangAST
+  clangASTMatchers
+  clangBasic
+  clangDynamicASTMatchers
+  clangFrontend
+  clangSerialization
+  clangTooling
+  clangQuery
+  )
+target_link_libraries(mojang-checker
+  PRIVATE
+  mojangChecker
+  )

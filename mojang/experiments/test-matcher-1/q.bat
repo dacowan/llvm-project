@@ -1,0 +1,1 @@
+../../../build/RelWithDebInfo/bin/clang-query.exe main.cpp
