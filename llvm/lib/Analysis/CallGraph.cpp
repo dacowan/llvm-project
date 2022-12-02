@@ -24,6 +24,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 
+#pragma optimize("", off)
+
 using namespace llvm;
 
 //===----------------------------------------------------------------------===//

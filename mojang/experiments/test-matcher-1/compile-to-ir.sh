@@ -1,0 +1,1 @@
+../../../build/RelWithDebInfo/bin/clang.exe -S -emit-llvm main.cpp -o main.ll

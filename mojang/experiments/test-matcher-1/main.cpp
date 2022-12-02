@@ -2,6 +2,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <functional>
 
 class PlayerProperties {
 public:
@@ -32,7 +33,7 @@ public:
 		mProperties->setHealth(100);
 	}
 
-	void tick() {
+	void playerTick() {
 		if (!mProperties) { return; }
 
 		if (mProperties->getHealth() <= 0) {
@@ -52,6 +53,7 @@ class Engine {
 public:
 	void initializeEngine() {
 		mPlayers.push_back(std::make_unique<Player>("Player-1"));
+		//mPlayerTickFunctions.push_back([this]() {mPlayers[0]->playerTick();});
 	}
 
 	void shutdownEngine() {
@@ -62,9 +64,20 @@ public:
 	}
 
 	bool tickPlayers() {
-		for (auto&& player : mPlayers) {
-			player->tick();
+#if false
+		for (auto&& fnTick : mPlayerTickFunctions) {
+			fnTick();
 		}
+#else
+		auto tickCaller = [this]() {
+			for (auto&& player : mPlayers) {
+				player->playerTick();
+			}
+		};
+
+		tickCaller();
+#endif
+
 		return false;
 	}
 
@@ -79,11 +92,20 @@ public:
 	}
 
 private:
+	using FN_PLAYER_TICK = std::function<void()>;
+
 	std::vector<std::unique_ptr<Player>> mPlayers;
+
+	std::vector<FN_PLAYER_TICK> mPlayerTickFunctions;
 };
 
+void ATestFunction(void) {
+	return;
+}
 
 int main(int argc, char** argv) {
+
+	ATestFunction();
 
 	Engine gameEngine;
 
