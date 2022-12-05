@@ -5,35 +5,37 @@
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/IR/Function.h"
 
+#include <map>
+
 #pragma optimize("", off)
 
 using namespace llvm;
 
-static std::string demangle(const std::string &Mangled) {
-  const char *DecoratedStr = Mangled.c_str();
-
-  std::string Result;
-  if (nonMicrosoftDemangle(DecoratedStr, Result))
-    return Result;
-
-  std::string Prefix;
-  char *Undecorated = nullptr;
-
-  if (!Undecorated && strncmp(DecoratedStr, "__imp_", 6) == 0) {
-    Prefix = "import thunk for ";
-    Undecorated = itaniumDemangle(DecoratedStr + 6, nullptr, nullptr, nullptr);
-  }
-
-  Result = Undecorated ? Prefix + Undecorated : Mangled;
-  free(Undecorated);
-  return Result;
-}
+// static std::string demangle(const std::string &Mangled) {
+//   const char *DecoratedStr = Mangled.c_str();
+// 
+//   std::string Result;
+//   if (nonMicrosoftDemangle(DecoratedStr, Result))
+//     return Result;
+// 
+//   std::string Prefix;
+//   char *Undecorated = nullptr;
+// 
+//   if (!Undecorated && strncmp(DecoratedStr, "__imp_", 6) == 0) {
+//     Prefix = "import thunk for ";
+//     Undecorated = itaniumDemangle(DecoratedStr + 6, nullptr, nullptr, nullptr);
+//   }
+// 
+//   Result = Undecorated ? Prefix + Undecorated : Mangled;
+//   free(Undecorated);
+//   return Result;
+// }
 
 
 PreservedAnalyses MojangTransformFunctionTest::run(Function &F,
                                       FunctionAnalysisManager &AM) {
   auto mangledName = F.getName();
-  auto demangledName = demangle(mangledName.str());
+  auto demangledName = llvm::demangle(mangledName.str());
 
   dbgs() << demangledName << "\n";
 
@@ -91,25 +93,66 @@ MojangTransformCallGraphTest::run(Module &M, ModuleAnalysisManager &AM) {
     return RHS->getFunction() != nullptr;
   });
 
-  std::string lookingFor = "playerTick@Player";
+  using CallGraphMap = std::unordered_map<CallGraphNode*, std::vector<CallGraphNode*>>;
 
-  for (auto nodeIt = Nodes.rbegin(); nodeIt != Nodes.rend(); ++nodeIt) {
-    CallGraphNode *CN = *nodeIt;
-    if (!CN->getFunction()) {
+  auto fnFindNodeThatUsesFunction =
+      [Nodes](const std::string name,
+              CallGraphMap& graphMap) -> CallGraphNode * {
+
+    for (auto nodeIt = Nodes.rbegin(); nodeIt != Nodes.rend(); ++nodeIt) {
+      CallGraphNode *CN = *nodeIt;
+      if (!CN->getFunction()) {
         continue;
-    }
+      }
+      // We already mapped this path
+      if (graphMap.find(CN) != graphMap.end()) {
+        continue;
+      }
 
-    for (const auto &I : *CN) {
+      for (const auto &I : *CN) {
         if (Function *FI = I.second->getFunction()) {
           std::string mangledName = FI->getName().str();
-          if (mangledName.find(lookingFor) != std::string::npos) {
-            lookingFor = CN->getFunction()->getName().str();
-            dbgs() << lookingFor << "\n";
-            break;
+          if (mangledName.find(name) != std::string::npos) {
+            return CN;
           }
         }
+      }
+    }
+    return nullptr;
+  };
+
+
+  std::string rootLookingFor = "getHealth@PlayerProperties";
+  CallGraphMap nodeCallGraphs;
+
+  // Find all the invocations of the root function that we're looking for
+  // We need all of their call stacks
+  auto n = fnFindNodeThatUsesFunction(rootLookingFor, nodeCallGraphs);
+  while (n) {
+    nodeCallGraphs[n] = {};
+    n = fnFindNodeThatUsesFunction(rootLookingFor, nodeCallGraphs);
+  }
+
+  // Now go through all the stacked invocations of the function we're looking
+  // for, and generate their call stacks
+  
+  int useCount = 1;
+  for (auto& [node, nodeGraph] : nodeCallGraphs) {
+    auto lookingFor = rootLookingFor;
+    dbgs() << "use #" << useCount << ": " << lookingFor << "\n";
+    auto foundNode = node;
+    while (foundNode) {
+      auto demangledLookingFor = llvm::demangle(lookingFor);
+      auto nodeFuncName = foundNode->getFunction()->getName().str();
+      auto demangledNodeFuncName = llvm::demangle(nodeFuncName);
+      dbgs() << "Looking for `" << lookingFor << "` (" << demangledLookingFor
+             << ") - found in `" << nodeFuncName << "` ("
+             << demangledNodeFuncName << ")\n ";
+      lookingFor = nodeFuncName;
+      foundNode = fnFindNodeThatUsesFunction(lookingFor, nodeCallGraphs);
     }
   }
+
 
 #endif
 

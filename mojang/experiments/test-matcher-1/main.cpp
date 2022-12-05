@@ -53,7 +53,6 @@ class Engine {
 public:
 	void initializeEngine() {
 		mPlayers.push_back(std::make_unique<Player>("Player-1"));
-		//mPlayerTickFunctions.push_back([this]() {mPlayers[0]->playerTick();});
 	}
 
 	void shutdownEngine() {
@@ -64,31 +63,47 @@ public:
 	}
 
 	bool tickPlayers() {
-#if false
-		for (auto&& fnTick : mPlayerTickFunctions) {
-			fnTick();
-		}
-#else
+
+		// Test a lambda for an indirect call to the ticks
 		auto tickCaller = [this]() {
 			for (auto&& player : mPlayers) {
 				player->playerTick();
 			}
 		};
 
-		tickCaller();
-#endif
-
+		tickCaller();  // invoke lambda
 		return false;
 	}
 
 	bool tick() {
-		const bool playersOK = tickPlayers();
-		return playersOK;
+		bool playersOK = tickPlayers();
+		bool tickPrimaryPlayerOK = tickPrimaryPlayer();
+		return playersOK || tickPrimaryPlayerOK;
 	}
 
 	Player* getPrimaryPlayer() {
-		if (mPlayers.empty()) { return nullptr; }
-		return mPlayers[0].get();
+		if (mPlayers.empty()) { 
+			return nullptr; 
+		}
+        Player* player = mPlayers[0].get();
+                if (player) {
+                        if (auto props = player->getProperties()) {
+                          if (props->getHealth()) {
+                            return player;
+                          }
+                        }
+                }
+                return nullptr;
+	}
+protected:
+	bool tickPrimaryPlayer() {
+		// just a nonsense function to get secondary invocations to our
+		// focus function
+		if( auto player = getPrimaryPlayer()) {
+			player->playerTick();
+			return false;
+		}
+		return true;
 	}
 
 private:
