@@ -4,6 +4,8 @@
 #include <vector>
 #include <functional>
 
+#if false
+
 class PlayerProperties {
 public:
 	int getHealth() const { return mHealth; }
@@ -136,3 +138,86 @@ int main(int argc, char** argv) {
 
 	return 0;
 }
+
+#else
+
+
+#if false
+void killPlayer() {
+}
+
+int getHealth() { 
+	return 0; 
+}
+
+void playerTick() {
+  int health = getHealth();
+  if (health <= 0) {
+    killPlayer();
+  }
+}
+
+void checkHealth() {
+  int health = getHealth();
+  if (health <= 0) {
+    killPlayer();
+  }
+}
+
+void tick() { 
+	playerTick();
+  checkHealth();
+}
+
+
+int main(int argc, char **argv) { 
+
+	tick();
+
+	return 0; 
+}
+#else
+
+void I() {
+	// function of interest
+}
+
+void H() {
+	I();
+}
+
+void G() {
+	I();
+}
+
+void F() {
+	H();
+}
+
+void E() {
+	H();
+}
+
+void D() {
+  F();
+  G();
+}
+
+void C() {
+  E();
+  F();
+}
+
+void B() {
+  C();
+  D();
+}
+
+void A() { 
+	B(); 
+}
+
+
+#endif
+
+#endif
