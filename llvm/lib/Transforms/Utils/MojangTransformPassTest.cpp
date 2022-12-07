@@ -27,10 +27,15 @@ MojangTransformFunctionTest::run(Function &F, FunctionAnalysisManager &AM) {
 // ----------------------------------------------------------------
 
 std::string extractFunctionName(const std::string &name) {
+    // A simple regex to extract the class/function name and parameters from a fully
+    // qualified decorated or undecorated C++ compiler name
+    // e.g. "?B@@YAXXZ" -> "void __cdecl B(void)" --> "B(void)"
+    // or "?testA@Test@@QEAAXXZ" -> ""public: void __cdecl Test::testA(void)"" --> "Test::testA(void)"
+  std::string undecorated = llvm::demangle(name);
   std::regex re(
-      R"((?:[a-z|A-Z|_][a-z|A-Z|_|0-9]*::)*[a-z|A-Z|_][a-z|A-Z|_|0-9]+\(.*\)$)");
+      R"((?:[a-z|A-Z|_][a-z|A-Z|_|0-9]*::)*[a-z|A-Z|_|0-9]+\([a-z|A-Z|_|0=9]*\)$)");
   std::smatch result;
-  if (std::regex_search(name, result, re)) {
+  if (std::regex_search(undecorated, result, re)) {
     if (result.size()) {
       return result[0].str();
     }
@@ -46,32 +51,18 @@ public:
 
     mMangledName = node->getFunction()->getName().str();
     mDemangledName = llvm::demangle(mMangledName);
+    mSimpleName = extractFunctionName(mMangledName);
   }
 
-  std::vector<std::pair<bool, MojangCGNode *>> &getCallers() {
-    return mCallers;
-  }
+  std::vector<MojangCGNode *> &getCallers() { return mCallers; }
   std::vector<MojangCGNode *> &getCallees() { return mCallees; }
 
   llvm::CallGraphNode *getCGNode() const { return mNode; }
 
-  void markCallerAsVisited(MojangCGNode *n) {
-    for (auto &[visited, node] : mCallers) {
-      if (node == n) {
-        visited = true;
-        break;
-      }
-    }
-  }
-
   void addCaller(MojangCGNode *value) {
-    const auto &&it = std::find_if(mCallers.begin(), mCallers.end(), 
-        [value](const std::pair<bool, MojangCGNode*>& nodepair) {
-      return nodepair.second == value;
-      }
-    );
+    const auto &&it = std::find(mCallers.begin(), mCallers.end(), value);
     if (it == mCallers.end()) {
-      mCallers.push_back(std::make_pair(false, value));
+      mCallers.push_back(value);
     }
   }
 
@@ -85,14 +76,16 @@ public:
 
   const std::string &getName() const { return mMangledName; }
   const std::string &getDemangledName() const { return mDemangledName; }
+  const std::string &getSimpleName() const { return mSimpleName; }
 
 protected:
-  std::vector<std::pair<bool, MojangCGNode *>> mCallers; // (bool = visited, MojangCGNode*)
+  std::vector<MojangCGNode *> mCallers;
   std::vector<MojangCGNode*> mCallees; 
   llvm::CallGraphNode *mNode;
 
   std::string mMangledName;
   std::string mDemangledName;
+  std::string mSimpleName;
 };
 
 
@@ -105,6 +98,7 @@ MojangTransformCallGraphTest::run(Module &M, ModuleAnalysisManager &AM) {
   std::vector<std::unique_ptr<MojangCGNode>> cgNodeList;
   std::unordered_map<CallGraphNode *, MojangCGNode *> callgraphMap;
 
+  // Utility function to find a node via it's full name
   auto _findMojangNodeByName = [&callgraphMap](const std::string name) -> MojangCGNode* {
     for (auto [cgNode, mjNode] : callgraphMap) {
       auto func = cgNode->getFunction();
@@ -116,15 +110,14 @@ MojangTransformCallGraphTest::run(Module &M, ModuleAnalysisManager &AM) {
     return nullptr;
   };
 
-
+  // Just render a list of node names
   auto _renderGraph = 
       [&out = dbgs()](const std::vector<MojangCGNode *> &graph) {
     out << "\n";
     auto &&it = graph.begin();
     while (it != graph.end()) {
       const auto &node = *it;
-      std::string prettyName = extractFunctionName(node->getDemangledName());
-      out << prettyName;
+      out << node->getSimpleName();
       ++it;
       if (it != graph.end()) {
         out << " --> ";
@@ -151,9 +144,11 @@ MojangTransformCallGraphTest::run(Module &M, ModuleAnalysisManager &AM) {
     // we have an actual doubly linked list of graph nodes
     for (auto [cgNode, mojangNode] : callgraphMap) {
 
-      auto name = cgNode->getFunction()->getName().str();
+      // Iterate across all the functions in the node -- add the callee functions to
+      // the Mojang node -- this will also populate the callees caller function, so as we
+      // traverse down the list of nodes, we'll eventually cross pollinate the nodes so that
+      // they all point to each other.
 
-      // Iterate across all the functions in the node
       for (const auto &fn : *cgNode) {
         if (Function *functionDef = fn.second->getFunction()) {
           std::string mangledName = functionDef->getName().str();
@@ -169,7 +164,13 @@ MojangTransformCallGraphTest::run(Module &M, ModuleAnalysisManager &AM) {
     // All of the nodes in cgNodeList should all have ptr's back and forth to the callers
     // and callees... so now it should be possible to generate a bottom up call stack for
     // any functions we're interested in.
-    // Remember that a single function can have many paths back to the root though...
+    // Remember that a single function can have many paths back to the root though... so a
+    // single function at the bottom of the graph may resolve to many paths back to a root
+    // (or multiple roots).  In addition, some of these paths may also have shared parts.
+    // The easiest way to parse all of these paths is a bottom up recursive traveler -
+    // but each split point needs to duplicate the path that it took up to that point, so
+    // that the final result has a full path from bottom to top (it's easier than trying to
+    // maintain lists of partial paths and stitch them together)
 
     { 
       std::string interestingFunction = "?I@@YAXXZ";
@@ -178,19 +179,33 @@ MojangTransformCallGraphTest::run(Module &M, ModuleAnalysisManager &AM) {
 
       std::function<void(MojangCGNode*)> fnVisitTree = [&graphList, &fnVisitTree](MojangCGNode* node) {
 
+          // get the current path that we're working on, and push the current node
           std::vector<MojangCGNode *> &graph = graphList.back();
           graph.push_back(node);
+
+          // record the size of the graph to get to this point
           int graphDepthSoFar = graph.size();
 
           const auto &callers = node->getCallers();
           auto &&itCallers = callers.begin();
 
           while (itCallers != callers.end()) {
-            const auto& callerPair = *itCallers;
-            fnVisitTree(callerPair.second);
+            const auto caller = *itCallers;
+
+            // first iteration over this loop will just continue along the current graph
+            // path that was on function entry, and will keep going until it gets to the root
+            // or dead end.
+            // subsequent iterations, however, will create a new route (duplicate the path that
+            // has been taken this far into the new route) and continue recursively tracking until
+            // it gets to the root or dead end.
+            // This will keep happening at each route split point in the overall graph tree until
+            // all the routes are solved
+            fnVisitTree(caller);
 
              ++itCallers;
              if (itCallers != callers.end()) {
+               // Push a new route and dupe the route that got us here - further iterations will 
+               // now build on this route as it traverses the new route to the root
                graphList.push_back({});
                std::vector<MojangCGNode *> &oldGraph = graphList[graphList.size()-2];
                std::vector<MojangCGNode *> &newGraph = graphList[graphList.size()-1];
@@ -201,8 +216,11 @@ MojangTransformCallGraphTest::run(Module &M, ModuleAnalysisManager &AM) {
     
       };
 
+      // Solve all of the routes for the interesting function name, and make a list of node lists
+      // which represent the callers
       auto rootNode = _findMojangNodeByName(interestingFunction);
       if (rootNode) {
+
         graphList.push_back({});
         fnVisitTree(rootNode);
 
@@ -218,156 +236,3 @@ MojangTransformCallGraphTest::run(Module &M, ModuleAnalysisManager &AM) {
   return PreservedAnalyses::all();
 }
 
-#if false
-
-llvm::PreservedAnalyses
-MojangTransformCallGraphTest::run(Module &M, ModuleAnalysisManager &AM) {
-
-  auto &CG = AM.getResult<CallGraphAnalysis>(M);
-
-#if false
-  unsigned sccNum = 0;
-  dbgs() << "SCCs for the program in PostOrder:";
-  for (scc_iterator<CallGraph *> SCCI = scc_begin(&CG); !SCCI.isAtEnd();
-       ++SCCI) {
-    const std::vector<CallGraphNode *> &nextSCC = *SCCI;
-    dbgs() << "\nSCC #" << ++sccNum << ": ";
-    bool First = true;
-    for (std::vector<CallGraphNode *>::const_iterator I = nextSCC.begin(),
-                                                      E = nextSCC.end();
-         I != E; ++I) {
-      if (First)
-        First = false;
-      else
-        dbgs() << ", ";
-     auto mangledName = ((*I)->getFunction() ? (*I)->getFunction()->getName()
-                                 : "external node");
-     auto demangledName = demangle(mangledName.str());
-//      if (demangledName.find("__cdecl std::") != std::string::npos) {
-//         continue;
-//      }
-
-     dbgs() << demangledName;
-    }
-
-    if (nextSCC.size() == 1 && SCCI.hasCycle())
-      dbgs() << " (Has self-loop).";
-  }
-  dbgs() << "\n";
-#else
-
-  SmallVector<CallGraphNode *, 16> Nodes;
-
-  for (auto fnIt = CG.begin(); fnIt != CG.end(); ++fnIt) {
-    Nodes.push_back(fnIt->second.get());
-  }
-
-  // Not sure why we need to sort function names by alpha?  What's the point?
-//   llvm::sort(Nodes, [](CallGraphNode *LHS, CallGraphNode *RHS) {
-//     if (Function *LF = LHS->getFunction())
-//       if (Function *RF = RHS->getFunction())
-//         return LF->getName() < RF->getName();
-// 
-//     return RHS->getFunction() != nullptr;
-//   });
-
-  using CallGraphList = std::vector<CallGraphNode*>;
-  using CallGraphMap = std::unordered_map<CallGraphNode*, CallGraphList>;
-
-  CallGraphMap nodeMap;
-
-  std::string functionToLookFor = "getHealth@PlayerProperties";
-
-  // Iterate across all the nodes, and find the function name we're interested in
-  // Make a list of these nodes - these are the end points of our graphs
-  for (auto nodeIt = Nodes.rbegin(); nodeIt != Nodes.rend(); ++nodeIt) {
-    CallGraphNode* node = *nodeIt;
-    if (!node->getFunction()) {
-      continue;
-    }
-
-    // Iterate across all the function calls within this node to see if one of them
-    // is the function call we're looking for
-    for (const auto &I : *node) {
-      if (Function *FI = I.second->getFunction()) {
-        std::string mangledName = FI->getName().str();
-        if (mangledName.find(functionToLookFor) != std::string::npos) {
-          // Found an invocation of our function of interest - push it into the map
-          nodeMap[node] = {};
-          break;
-        }
-      }
-    }
-  }
-
-  // Now we have a map full of keys, comprised of the nodes which invoke our function
-  // We now have to traverse the 
-
-
-  auto fnFindNodeThatUsesFunction =
-      [Nodes](const std::string name,
-              CallGraphMap graphMap) -> CallGraphNode * {
-
-    for (auto nodeIt = Nodes.rbegin(); nodeIt != Nodes.rend(); ++nodeIt) {
-      CallGraphNode *CN = *nodeIt;
-      if (!CN->getFunction()) {
-        continue;
-      }
-      // We already mapped this path
-//       if (graphMap.find(CN) != graphMap.end()) {
-//         continue;
-//       }
-
-      for (const auto &I : *CN) {
-        if (Function *FI = I.second->getFunction()) {
-          std::string mangledName = FI->getName().str();
-          if (mangledName.find(name) != std::string::npos) {
-            return CN;
-          }
-        }
-      }
-    }
-    return nullptr;
-  };
-
-
-  std::string rootLookingFor = "getHealth@PlayerProperties";
-  CallGraphMap nodeCallGraphs;
-
-  // Find all the invocations of the root function that we're looking for
-  // We need all of their call stacks
-  auto n = fnFindNodeThatUsesFunction(rootLookingFor, nodeCallGraphs);
-  while (n) {
-    nodeCallGraphs[n] = {};
-    n = fnFindNodeThatUsesFunction(rootLookingFor, nodeCallGraphs);
-  }
-
-  // Now go through all the stacked invocations of the function we're looking
-  // for, and generate their call stacks
-  
-  int useCount = 1;
-  for (auto& [node, nodeGraph] : nodeCallGraphs) {
-    auto lookingFor = rootLookingFor;
-    dbgs() << "\nuse #" << useCount++ << ": " << lookingFor << "\n";
-
-    auto foundNode = node;
-    while (foundNode) {
-      auto demangledLookingFor = llvm::demangle(lookingFor);
-      auto nodeFuncName = foundNode->getFunction()->getName().str();
-      auto demangledNodeFuncName = llvm::demangle(nodeFuncName);
-      dbgs() << "Looking for `" << lookingFor << "` (" << demangledLookingFor
-             << ") - found in `" << nodeFuncName << "` ("
-             << demangledNodeFuncName << ")\n ";
-      lookingFor = nodeFuncName;
-      foundNode = fnFindNodeThatUsesFunction(lookingFor, nodeCallGraphs);
-    }
-  }
-
-
-#endif
-
-
-  return PreservedAnalyses::all();
-}
-
-#endif

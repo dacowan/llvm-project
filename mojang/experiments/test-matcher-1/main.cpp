@@ -178,6 +178,11 @@ int main(int argc, char **argv) {
 }
 #else
 
+class Test {
+public:
+  void testA() {}
+};
+
 void I() {
 	// function of interest
 }
@@ -214,7 +219,11 @@ void B() {
 }
 
 void A() { 
+	Test t;
+
 	B(); 
+
+	t.testA();
 }
 
 
